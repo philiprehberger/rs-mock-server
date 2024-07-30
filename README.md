@@ -9,13 +9,11 @@ Lightweight, per-test HTTP mock server for testing API integrations
 ## Installation
 
 ```toml
-[dev-dependencies]
-philiprehberger-mock-server = "0.1.0"
+[dependencies]
+philiprehberger-mock-server = "0.1.1"
 ```
 
 ## Usage
-
-### Basic GET mock
 
 ```rust
 use philiprehberger_mock_server::{MockServer, Method};
