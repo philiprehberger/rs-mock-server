@@ -3,6 +3,7 @@
 [![CI](https://github.com/philiprehberger/rs-mock-server/actions/workflows/ci.yml/badge.svg)](https://github.com/philiprehberger/rs-mock-server/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/philiprehberger-mock-server.svg)](https://crates.io/crates/philiprehberger-mock-server)
 [![License](https://img.shields.io/github/license/philiprehberger/rs-mock-server)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ec6cb9)](https://github.com/sponsors/philiprehberger)
 
 Lightweight, per-test HTTP mock server for testing API integrations
 
