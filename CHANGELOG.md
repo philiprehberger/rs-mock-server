@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 (2026-04-27)
+
+- Add `MockBuilder::match_header(name, value)` for header-based mock routing
+- Add `MockBuilder::match_body(body)` for exact-body mock routing
+- Add `MockBuilder::match_query(key, value)` for query-parameter mock routing
+- Multiple matchers stack — all must pass for a mock to match
+
 ## 0.1.3 (2026-03-31)
 
 - Standardize README to 3-badge format with emoji Support section

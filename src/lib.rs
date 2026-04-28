@@ -108,6 +108,9 @@ struct MockDefinition {
     delay: Option<Duration>,
     times: Option<usize>,
     call_count: usize,
+    match_headers: Vec<(String, String)>,
+    match_body: Option<String>,
+    match_query: Vec<(String, String)>,
 }
 
 /// A lightweight HTTP mock server bound to a random local port.
@@ -185,6 +188,9 @@ impl MockServer {
             body: None,
             delay: None,
             times: None,
+            match_headers: Vec::new(),
+            match_body: None,
+            match_query: Vec::new(),
         }
     }
 
@@ -243,6 +249,9 @@ pub struct MockBuilder<'a> {
     body: Option<String>,
     delay: Option<Duration>,
     times: Option<usize>,
+    match_headers: Vec<(String, String)>,
+    match_body: Option<String>,
+    match_query: Vec<(String, String)>,
 }
 
 impl<'a> MockBuilder<'a> {
@@ -286,6 +295,27 @@ impl<'a> MockBuilder<'a> {
         self
     }
 
+    /// Require the request to contain a header matching `name` (case-insensitive)
+    /// and `value` (exact match). Stackable — calling repeatedly requires every
+    /// header to match.
+    pub fn match_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.match_headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Require the request body to equal `body` exactly.
+    pub fn match_body(mut self, body: impl Into<String>) -> Self {
+        self.match_body = Some(body.into());
+        self
+    }
+
+    /// Require the query string to contain `key=value`. Stackable — order
+    /// of declarations is independent of order in the request.
+    pub fn match_query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.match_query.push((key.into(), value.into()));
+        self
+    }
+
     /// Register the mock on the server.
     pub fn create(&self) {
         let definition = MockDefinition {
@@ -297,6 +327,9 @@ impl<'a> MockBuilder<'a> {
             delay: self.delay,
             times: self.times,
             call_count: 0,
+            match_headers: self.match_headers.clone(),
+            match_body: self.match_body.clone(),
+            match_query: self.match_query.clone(),
         };
         let mut guard = self
             .server
@@ -410,16 +443,53 @@ async fn handle_connection(
                         let mut matched = None;
 
                         for (i, mock) in mocks_guard.iter().enumerate() {
-                            if Some(&mock.method) == parsed_method.as_ref() && mock.path == path {
-                                // Check if this mock has exceeded its expected calls.
-                                if let Some(times) = mock.times {
-                                    if mock.call_count >= times {
-                                        continue;
-                                    }
-                                }
-                                matched = Some(i);
-                                break;
+                            if Some(&mock.method) != parsed_method.as_ref() || mock.path != path {
+                                continue;
                             }
+                            if let Some(times) = mock.times {
+                                if mock.call_count >= times {
+                                    continue;
+                                }
+                            }
+                            // Header matchers — case-insensitive name match,
+                            // exact value match. All required headers must be
+                            // present.
+                            let headers_ok = mock.match_headers.iter().all(|(k, v)| {
+                                headers
+                                    .iter()
+                                    .any(|(rk, rv)| rk.eq_ignore_ascii_case(k) && rv == v)
+                            });
+                            if !headers_ok {
+                                continue;
+                            }
+                            // Body matcher — exact equality.
+                            if let Some(ref expected) = mock.match_body {
+                                if expected != &body {
+                                    continue;
+                                }
+                            }
+                            // Query matchers — every (k, v) must appear as a
+                            // pair in the parsed query string.
+                            let query_pairs: Vec<(String, String)> = if query.is_empty() {
+                                Vec::new()
+                            } else {
+                                query
+                                    .split('&')
+                                    .filter_map(|kv| {
+                                        kv.split_once('=').map(|(k, v)| {
+                                            (k.to_string(), v.to_string())
+                                        })
+                                    })
+                                    .collect()
+                            };
+                            let query_ok = mock.match_query.iter().all(|(k, v)| {
+                                query_pairs.iter().any(|(qk, qv)| qk == k && qv == v)
+                            });
+                            if !query_ok {
+                                continue;
+                            }
+                            matched = Some(i);
+                            break;
                         }
 
                         if let Some(idx) = matched {
@@ -549,7 +619,7 @@ mod tests {
         // Parse status code.
         let status_line = response_str.lines().next().unwrap_or("");
         let status: u16 = status_line
-            .splitn(3, ' ')
+            .split(' ')
             .nth(1)
             .unwrap_or("0")
             .parse()
@@ -744,6 +814,149 @@ mod tests {
         assert_eq!(body, "ok");
         assert!(headers.contains("X-Custom: hello"));
         assert!(headers.contains("X-Another: world"));
+    }
+
+    #[tokio::test]
+    async fn test_match_header_routes_request() {
+        let server = MockServer::start().await;
+
+        server
+            .mock(Method::GET, "/who")
+            .with_status(200)
+            .with_body("admin")
+            .match_header("x-role", "admin")
+            .create();
+
+        server
+            .mock(Method::GET, "/who")
+            .with_status(200)
+            .with_body("user")
+            .match_header("x-role", "user")
+            .create();
+
+        // Send admin request
+        let mut stream = TcpStream::connect(server.url().strip_prefix("http://").unwrap())
+            .await
+            .unwrap();
+        let req = "GET /who HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Role: admin\r\n\r\n";
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response_str = String::from_utf8_lossy(&response).to_string();
+        assert!(response_str.ends_with("admin"), "got: {response_str}");
+
+        // Send user request
+        let mut stream = TcpStream::connect(server.url().strip_prefix("http://").unwrap())
+            .await
+            .unwrap();
+        let req = "GET /who HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Role: user\r\n\r\n";
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response_str = String::from_utf8_lossy(&response).to_string();
+        assert!(response_str.ends_with("user"), "got: {response_str}");
+    }
+
+    #[tokio::test]
+    async fn test_match_body_routes_post() {
+        let server = MockServer::start().await;
+
+        server
+            .mock(Method::POST, "/webhook")
+            .with_status(200)
+            .with_body("first")
+            .match_body(r#"{"event":"a"}"#)
+            .create();
+
+        server
+            .mock(Method::POST, "/webhook")
+            .with_status(200)
+            .with_body("second")
+            .match_body(r#"{"event":"b"}"#)
+            .create();
+
+        let (_, body, _) =
+            http_request(&server.url(), "POST", "/webhook", Some(r#"{"event":"a"}"#)).await;
+        assert_eq!(body, "first");
+
+        let (_, body, _) =
+            http_request(&server.url(), "POST", "/webhook", Some(r#"{"event":"b"}"#)).await;
+        assert_eq!(body, "second");
+
+        // Unmatched body falls through to 404
+        let (status, body, _) =
+            http_request(&server.url(), "POST", "/webhook", Some(r#"{"event":"c"}"#)).await;
+        assert_eq!(status, 404);
+        assert_eq!(body, "No mock matched");
+    }
+
+    #[tokio::test]
+    async fn test_match_query_routes_request() {
+        let server = MockServer::start().await;
+
+        server
+            .mock(Method::GET, "/search")
+            .with_status(200)
+            .with_body("rust")
+            .match_query("lang", "rust")
+            .create();
+
+        server
+            .mock(Method::GET, "/search")
+            .with_status(200)
+            .with_body("go")
+            .match_query("lang", "go")
+            .create();
+
+        let (_, body) = http_get(&server.url(), "/search?lang=rust").await;
+        assert_eq!(body, "rust");
+
+        let (_, body) = http_get(&server.url(), "/search?lang=go").await;
+        assert_eq!(body, "go");
+
+        // Wrong query value → 404
+        let (status, _) = http_get(&server.url(), "/search?lang=python").await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_match_combined_header_and_query() {
+        let server = MockServer::start().await;
+
+        server
+            .mock(Method::GET, "/api")
+            .with_status(200)
+            .with_body("ok")
+            .match_header("authorization", "Bearer secret")
+            .match_query("v", "2")
+            .create();
+
+        // Both match — succeed
+        let mut stream = TcpStream::connect(server.url().strip_prefix("http://").unwrap())
+            .await
+            .unwrap();
+        let req = "GET /api?v=2 HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer secret\r\n\r\n";
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response_str = String::from_utf8_lossy(&response).to_string();
+        assert!(response_str.contains("200 OK"));
+        assert!(response_str.ends_with("ok"));
+
+        // Header missing — 404
+        let (status, _) = http_get(&server.url(), "/api?v=2").await;
+        assert_eq!(status, 404);
+
+        // Query missing — 404
+        let mut stream = TcpStream::connect(server.url().strip_prefix("http://").unwrap())
+            .await
+            .unwrap();
+        let req = "GET /api HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer secret\r\n\r\n";
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response_str = String::from_utf8_lossy(&response).to_string();
+        assert!(response_str.contains("404"), "got: {response_str}");
     }
 
     #[tokio::test]

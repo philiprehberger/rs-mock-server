@@ -10,7 +10,7 @@ Lightweight, per-test HTTP mock server for testing API integrations
 
 ```toml
 [dependencies]
-philiprehberger-mock-server = "0.1.2"
+philiprehberger-mock-server = "0.2.0"
 ```
 
 ## Usage
@@ -94,6 +94,67 @@ async fn test_request_recording() {
 }
 ```
 
+### Header matching
+
+```rust
+use philiprehberger_mock_server::{MockServer, Method};
+
+#[tokio::test]
+async fn test_role_routing() {
+    let server = MockServer::start().await;
+
+    server
+        .mock(Method::GET, "/who")
+        .with_status(200)
+        .with_body("admin")
+        .match_header("X-Role", "admin")
+        .create();
+
+    server
+        .mock(Method::GET, "/who")
+        .with_status(200)
+        .with_body("user")
+        .match_header("X-Role", "user")
+        .create();
+}
+```
+
+### Body matching
+
+```rust
+use philiprehberger_mock_server::{MockServer, Method};
+
+#[tokio::test]
+async fn test_event_dispatch() {
+    let server = MockServer::start().await;
+
+    server
+        .mock(Method::POST, "/webhook")
+        .with_status(200)
+        .with_body("event-a")
+        .match_body(r#"{"event":"a"}"#)
+        .create();
+}
+```
+
+### Query matching
+
+```rust
+use philiprehberger_mock_server::{MockServer, Method};
+
+#[tokio::test]
+async fn test_search_lang() {
+    let server = MockServer::start().await;
+
+    server
+        .mock(Method::GET, "/search")
+        .with_status(200)
+        .with_body("rust")
+        .match_query("lang", "rust")
+        .create();
+}
+```
+
 ## API
 
 | Item | Description |
@@ -109,6 +170,9 @@ async fn test_request_recording() {
 | `MockBuilder::with_header(key, value)` | Add a response header |
 | `MockBuilder::with_delay(duration)` | Add a delay before responding |
 | `MockBuilder::expect(times)` | Expect exactly N calls (verified on drop) |
+| `MockBuilder::match_header(name, value)` | Require a matching request header (case-insensitive name) |
+| `MockBuilder::match_body(body)` | Require an exact request body |
+| `MockBuilder::match_query(key, value)` | Require a query parameter to be present with this value |
 | `MockBuilder::create()` | Register the mock on the server |
 | `Method` | HTTP method enum: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS |
 | `RecordedRequest` | Captured request with method, path, headers, body, query |
